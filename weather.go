@@ -43,6 +43,20 @@ type GeoResult struct {
 	Longitude   float64  `json:"longitude"`
 }
 
+func (g *GeoResult) IsZero() bool {
+	if g == nil {
+		return true
+	}
+	return g.City == "" &&
+		g.State == "" &&
+		g.County == "" &&
+		g.CountryCode == "" &&
+		g.PostCodes == nil &&
+		g.Timezone == "" &&
+		g.Latitude == 0.0 &&
+		g.Longitude == 0.0
+}
+
 type GeoResults struct {
 	Results []*GeoResult `json:"results"`
 	State   string

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -15,13 +16,16 @@ import (
 
 type locations [][2]string
 
-var defaultLocations = locations{
-	{"Valley Springs", "California"},
-	{"Phoenix", "Arizona"},
-	{"Princeton", "Massachusetts"},
-	{"Placitas", "New Mexico"},
-	{"Mechanicsburg", "Pennsylvania"},
-}
+var (
+	defaultLocations = locations{
+		{"Valley Springs", "California"},
+		{"Phoenix", "Arizona"},
+		{"Princeton", "Massachusetts"},
+		{"Placitas", "New Mexico"},
+		{"Mechanicsburg", "Pennsylvania"},
+	}
+	numWorkers int
+)
 
 func getFile(arg string) (io.ReadCloser, error) {
 	after, found := strings.CutPrefix(arg, "/dev/fd/")
@@ -39,10 +43,58 @@ func getFile(arg string) (io.ReadCloser, error) {
 	return os.Open(arg)
 }
 
+func pipe1(l locations) <-chan *GeoResults {
+	out := make(chan *GeoResults)
+	go func() {
+		defer close(out)
+		for _, location := range l {
+			city, state := location[0], location[1]
+			out <- GetLocation(city, state)
+		}
+	}()
+	return out
+}
+
+func pipe2(in <-chan *GeoResults) <-chan *Forecast {
+	out := make(chan *Forecast)
+	go func() {
+		defer close(out)
+		var wg sync.WaitGroup
+		for range numWorkers {
+			wg.Go(func() {
+				for location := range in {
+					if location.Err != nil {
+						log.Println(location.Err)
+					}
+					var g GeoResult
+					for _, loc := range location.Results {
+						if loc.State == location.State {
+							g = *loc
+							break
+						}
+					}
+					if !g.IsZero() {
+						out <- GetForecast(g)
+					}
+				}
+			})
+		}
+		wg.Wait()
+	}()
+	return out
+}
+
+func pipeline(l locations) <-chan *Forecast {
+	return pipe2(pipe1(l))
+}
+
 func main() {
+	flag.IntVar(&numWorkers, "workers", 3, "The number of concurrent workers.")
+	flag.Parse()
+
 	l := locations{}
 	if len(os.Args) > 1 {
-		reader, err := getFile(os.Args[len(os.Args)-1])
+		reader, err := getFile(flag.Args()[0])
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -58,40 +110,7 @@ func main() {
 	} else {
 		l = defaultLocations
 	}
-
-	locations := make(chan *GeoResults, len(l))
-	var wg sync.WaitGroup
-	for _, location := range l {
-		city, state := location[0], location[1]
-		wg.Go(func() {
-			locations <- GetLocation(city, state)
-		})
-	}
-
-	wg.Wait()
-	close(locations)
-
-	forecasts := make(chan *Forecast, len(l))
-	for location := range locations {
-		if location.Err != nil {
-			log.Println(location.Err)
-		}
-		var g GeoResult
-		for _, loc := range location.Results {
-			if loc.State == location.State {
-				g = *loc
-				break
-			}
-		}
-		wg.Go(func() {
-			forecasts <- GetForecast(g)
-		})
-	}
-
-	wg.Wait()
-	close(forecasts)
-
-	for forecast := range forecasts {
+	for forecast := range pipeline(l) {
 		if forecast.Err != nil {
 			log.Println(forecast.Err)
 		}
