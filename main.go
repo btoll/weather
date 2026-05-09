@@ -59,29 +59,42 @@ func main() {
 		l = defaultLocations
 	}
 
+	locations := make(chan *GeoResults, len(l))
 	var wg sync.WaitGroup
 	for _, location := range l {
 		city, state := location[0], location[1]
 		wg.Go(func() {
-			gresults, err := GetLocation(city)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			var g GeoResult
-			for _, location := range gresults.Results {
-				if location.State == state {
-					g = *location
-					break
-				}
-			}
-
-			forecast, err := GetForecast(g)
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Printf("\n%s, %s\n%+v\n", city, state, forecast)
+			locations <- GetLocation(city, state)
 		})
 	}
+
 	wg.Wait()
+	close(locations)
+
+	forecasts := make(chan *Forecast, len(l))
+	for location := range locations {
+		if location.Err != nil {
+			log.Println(location.Err)
+		}
+		var g GeoResult
+		for _, loc := range location.Results {
+			if loc.State == location.State {
+				g = *loc
+				break
+			}
+		}
+		wg.Go(func() {
+			forecasts <- GetForecast(g)
+		})
+	}
+
+	wg.Wait()
+	close(forecasts)
+
+	for forecast := range forecasts {
+		if forecast.Err != nil {
+			log.Println(forecast.Err)
+		}
+		fmt.Printf("\n%+v\n", forecast)
+	}
 }
