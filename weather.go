@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -74,62 +75,74 @@ type Forecast struct {
 	Err error
 }
 
-func GetForecast(g GeoResult) *Forecast {
-	params := url.Values{}
-	params.Add("latitude", strconv.FormatFloat(g.Latitude, 'g', -1, 64))
-	params.Add("longitude", strconv.FormatFloat(g.Longitude, 'g', -1, 64))
-	params.Add("current", "weather_code,temperature_2m,wind_speed_10m")
-	params.Add("timezone", g.Timezone)
-	params.Add("temperature_unit", "fahrenheit")
-	params.Add("wind_speed_unit", "mph")
-	params.Add("precipitation_unit", "inch")
+func GetForecast(ctx context.Context, g GeoResult) *Forecast {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+		params := url.Values{}
+		params.Add("latitude", strconv.FormatFloat(g.Latitude, 'g', -1, 64))
+		params.Add("longitude", strconv.FormatFloat(g.Longitude, 'g', -1, 64))
+		params.Add("current", "weather_code,temperature_2m,wind_speed_10m")
+		params.Add("timezone", g.Timezone)
+		params.Add("temperature_unit", "fahrenheit")
+		params.Add("wind_speed_unit", "mph")
+		params.Add("precipitation_unit", "inch")
 
-	fresults := &Forecast{
-		City:  g.City,
-		State: g.State,
-	}
-	resp, err := client.Get(FORECAST_URL + params.Encode())
-	if err != nil {
-		fresults.Err = err
+		fresults := &Forecast{
+			City:  g.City,
+			State: g.State,
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, FORECAST_URL+params.Encode(), nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			fresults.Err = err
+			return fresults
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fresults.Err = err
+			return fresults
+		}
+		err = json.Unmarshal(b, fresults)
+		if err != nil {
+			fresults.Err = err
+			return fresults
+		}
 		return fresults
 	}
-	b, err := io.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	if err != nil {
-		fresults.Err = err
-		return fresults
-	}
-	err = json.Unmarshal(b, fresults)
-	if err != nil {
-		fresults.Err = err
-		return fresults
-	}
-	return fresults
 }
 
-func GetLocation(city, state string) *GeoResults {
-	params := url.Values{}
-	params.Add("count", "50")
-	params.Add("name", city)
-	params.Add("language", "en")
-	params.Add("countryCode", "US")
+func GetLocation(ctx context.Context, city, state string) *GeoResults {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+		params := url.Values{}
+		params.Add("count", "50")
+		params.Add("name", city)
+		params.Add("language", "en")
+		params.Add("countryCode", "US")
 
-	gresults := &GeoResults{State: state}
-	resp, err := client.Get(GEO_URL + params.Encode())
-	if err != nil {
-		gresults.Err = err
+		gresults := &GeoResults{State: state}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, GEO_URL+params.Encode(), nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			gresults.Err = err
+			return gresults
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			gresults.Err = err
+			return gresults
+		}
+		err = json.Unmarshal(b, gresults)
+		if err != nil {
+			gresults.Err = err
+			return gresults
+		}
 		return gresults
 	}
-	b, err := io.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	if err != nil {
-		gresults.Err = err
-		return gresults
-	}
-	err = json.Unmarshal(b, gresults)
-	if err != nil {
-		gresults.Err = err
-		return gresults
-	}
-	return gresults
 }

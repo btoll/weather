@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // https://open-meteo.com/en/docs
@@ -25,6 +27,7 @@ var (
 		{"Mechanicsburg", "Pennsylvania"},
 	}
 	numWorkers int
+	timeout    int
 )
 
 func getFile(arg string) (io.ReadCloser, error) {
@@ -43,38 +46,54 @@ func getFile(arg string) (io.ReadCloser, error) {
 	return os.Open(arg)
 }
 
-func pipe1(l locations) <-chan *GeoResults {
+func pipe1(ctx context.Context, l locations) <-chan *GeoResults {
 	out := make(chan *GeoResults)
 	go func() {
 		defer close(out)
 		for _, location := range l {
 			city, state := location[0], location[1]
-			out <- GetLocation(city, state)
+			select {
+			case out <- GetLocation(ctx, city, state):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out
 }
 
-func pipe2(in <-chan *GeoResults) <-chan *Forecast {
+func pipe2(ctx context.Context, in <-chan *GeoResults) <-chan *Forecast {
 	out := make(chan *Forecast)
 	go func() {
 		defer close(out)
 		var wg sync.WaitGroup
 		for range numWorkers {
 			wg.Go(func() {
-				for location := range in {
-					if location.Err != nil {
-						log.Println(location.Err)
-					}
-					var g GeoResult
-					for _, loc := range location.Results {
-						if loc.State == location.State {
-							g = *loc
-							break
+				for {
+					select {
+					case location, ok := <-in:
+						if !ok {
+							return
 						}
-					}
-					if !g.IsZero() {
-						out <- GetForecast(g)
+						if location.Err != nil {
+							log.Println(location.Err)
+						}
+						var g GeoResult
+						for _, loc := range location.Results {
+							if loc.State == location.State {
+								g = *loc
+								break
+							}
+						}
+						if !g.IsZero() {
+							select {
+							case out <- GetForecast(ctx, g):
+							case <-ctx.Done():
+								return
+							}
+						}
+					case <-ctx.Done():
+						return
 					}
 				}
 			})
@@ -84,16 +103,20 @@ func pipe2(in <-chan *GeoResults) <-chan *Forecast {
 	return out
 }
 
-func pipeline(l locations) <-chan *Forecast {
-	return pipe2(pipe1(l))
+func pipeline(ctx context.Context, l locations) <-chan *Forecast {
+	return pipe2(
+		ctx,
+		pipe1(ctx, l),
+	)
 }
 
 func main() {
 	flag.IntVar(&numWorkers, "workers", 3, "The number of concurrent workers.")
+	flag.IntVar(&timeout, "timeout", 5, "Timeout in seconds.")
 	flag.Parse()
 
 	l := locations{}
-	if len(os.Args) > 1 {
+	if len(flag.Args()) > 0 {
 		reader, err := getFile(flag.Args()[0])
 		if err != nil {
 			log.Fatal(err)
@@ -110,7 +133,9 @@ func main() {
 	} else {
 		l = defaultLocations
 	}
-	for forecast := range pipeline(l) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+	for forecast := range pipeline(ctx, l) {
 		if forecast.Err != nil {
 			log.Println(forecast.Err)
 		}
